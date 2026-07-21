@@ -37,6 +37,7 @@ list:
   footer: 'Page {page} of {total}'
   label_retweet: 'retweet'
   label_quote: 'quote'
+  label_reply: 'reply'
   label_text: 'text'
   label_media: 'media'
   label_using: 'using'
@@ -53,6 +54,7 @@ modal:
       label: 'Enable notifications for:'
       retweet: 'Retweet'
       quote: 'Quote'
+      reply: 'Reply'
     media_type:
       label: 'Media type:'
       all: 'All'
@@ -68,6 +70,7 @@ display:
     tweeted: 'tweeted'
     retweeted: 'retweeted'
     quoted: 'quoted'
+    replied: 'replied'
   tweet_type:
     photos: '{count} photos'
     media: 'a {media_type}'
@@ -90,15 +93,16 @@ commands:
         username: 'The username of the twitter user you want to turn on notifications for.'
         channel: 'The channel to which the bot delivers notifications.'
         mention: 'The role to mention when notifying.'
-        type: 'Whether to enable notifications for retweets & quotes.'
+        type: 'Whether to enable notifications for retweets, quotes & replies.'
         media_type: 'Whether to enable notifications for All Tweets, Tweets with Media, or Tweets without Media Only.'
         account_used: 'The account used to deliver notifications.'
       choices:
         enable_type:
           all_default: 'All (default)'
-          retweet_only: 'Tweet & Retweet Only'
-          quote_only: 'Tweet & Quote Only'
-          tweet_only: 'Tweet Only'
+          retweet_only: 'Tweet, Retweet & Reply'
+          quote_only: 'Tweet, Quote & Reply'
+          tweet_only: 'Tweet & Reply Only'
+          no_reply: 'All except Reply'
         media_type:
           all_default: 'All (default)'
           no_media: 'No Media'

@@ -48,6 +48,11 @@ async def get_parsed_tweet(tweet: Tweet, session: aiohttp.ClientSession = None, 
 
 
 def is_match_type(tweet: Tweet, enable_type: str):
+    # enable_type bits: [0]=retweet, [1]=quote, [2]=reply. A pre-migration
+    # (2-char) enable_type is treated as reply-enabled (matches migrate_db's
+    # default-on behavior, in case a row was somehow missed by it).
+    if getattr(tweet, 'is_reply', False):
+        return len(enable_type) < 3 or enable_type[2] == '1'
     tweet_type = 0 if tweet.is_retweet else 1 if tweet.is_quoted else -1
     return tweet_type == -1 or enable_type[tweet_type] == '1'
 

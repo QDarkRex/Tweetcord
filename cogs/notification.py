@@ -32,7 +32,7 @@ class Notification(Cog_Extension):
 
     @add_group.command(name='notifier', description=t('commands.add.notifier.description'))
     @app_commands.choices(
-        enable_type=[app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.all_default'), value='11'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.retweet_only'), value='10'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.quote_only'), value='01'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.tweet_only'), value='00')],
+        enable_type=[app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.all_default'), value='111'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.retweet_only'), value='101'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.quote_only'), value='011'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.tweet_only'), value='001'), app_commands.Choice(name=t('commands.add.notifier.choices.enable_type.no_reply'), value='110')],
         media_type=[app_commands.Choice(name=t('commands.add.notifier.choices.media_type.all_default'), value='11'), app_commands.Choice(name=t('commands.add.notifier.choices.media_type.no_media'), value='10'), app_commands.Choice(name=t('commands.add.notifier.choices.media_type.media_only'), value='01')],
         account_used=[app_commands.Choice(name=account_name, value=account_name) for account_name, _ in get_accounts().items()]
     )
@@ -45,7 +45,7 @@ class Notification(Cog_Extension):
         media_type=t('commands.add.notifier.params.media_type'),
         account_used=t('commands.add.notifier.params.account_used'),
     )
-    async def notifier(self, itn: discord.Interaction, username: str, channel: discord.TextChannel | discord.Thread, mention: discord.Role = None, enable_type: str = '11', media_type: str = '11', account_used: str = list(get_accounts().keys())[0]):
+    async def notifier(self, itn: discord.Interaction, username: str, channel: discord.TextChannel | discord.Thread, mention: discord.Role = None, enable_type: str = '111', media_type: str = '11', account_used: str = list(get_accounts().keys())[0]):
         """Add a twitter user to specific channel on your server.
 
         Parameters
@@ -57,7 +57,7 @@ class Notification(Cog_Extension):
         mention: discord.Role
             The role to mention when notifying.
         enable_type: str
-            Whether to enable notifications for retweets & quotes.
+            Whether to enable notifications for retweets, quotes & replies.
         media_type: str
             Whether to enable notifications for All Tweets, Tweets with Media, or Tweets without Media Only.
         account_used: str

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import sys
 import re
 import aiohttp
@@ -10,12 +11,14 @@ import discord
 from discord.ext import commands
 from tweety import Twitter
 
+import reply_transaction
 from core.classes import ParsedTweet
 from configs.load_configs import configs, IS_TRANSLATION_ENABLED
 from src.i18n import t
 from src.log import setup_logger
 from src.notification.display_tools import gen_embed, get_action
 from src.notification.get_tweets import get_tweets
+from src.notification.reply_fetcher import get_user_replies
 from src.notification.utils import is_match_media_type, is_match_type, replace_emoji, get_parsed_tweet
 from src.utils import get_accounts, get_lock, get_utcnow
 from src.db_function.readonly_db import connect_readonly
@@ -34,6 +37,10 @@ class AccountTracker():
         self.accounts_data = get_accounts()
         self.db_path = os.path.join(os.getenv('DATA_PATH'), 'tracked_accounts.db')
         self.tweets = {account_name: [] for account_name in self.accounts_data.keys()}
+        # Replies, keyed by TRACKED USERNAME (not burner) — X has no shared replies
+        # feed, so each tracked account is polled individually. See reply_fetcher.py.
+        self.reply_tweets: dict[str, list] = {}
+        self.apps: dict[str, Twitter] = {}
         self.session = None
         # Responsible for processing queries and writing timestamps
         self.db_write_queue = asyncio.Queue()
@@ -73,14 +80,21 @@ class AccountTracker():
         for account_name, account_token in self.accounts_data.items():
             try:
                 app = await authenticate_account(account_name, account_token)
+                self.apps[account_name] = app
                 self.bot.loop.create_task(self.tweetsUpdater(app)).set_name(f'TweetsUpdater_{account_name}')
             except Exception:
                 sys.exit(1)
 
-        # Initial user list for notification tasks
+        # Any ONE authenticated burner's token can source the real transaction id
+        # replies need (it isn't observed to be burner-specific — see reply_transaction.py).
+        reply_transaction.set_source_token(next(iter(self.accounts_data.values())))
+        self.bot.loop.create_task(reply_transaction.ensure_fresh()).set_name('ReplyTransactionWarmup')
+
+        # Initial user list for notification + replies tasks
         for (username, client_used), _ in self.latest_tweet_timestamps.items():
             self.bot.loop.create_task(self.notification(username, client_used)).set_name(username)
-        
+            self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
+
         self.bot.loop.create_task(self.tasksMonitor()).set_name('TasksMonitor')
 
     async def timestamp_updater(self):
@@ -127,7 +141,7 @@ class AccountTracker():
                 log.warning(f"no timestamp for {username}, task will terminate.")
                 break
 
-            latest_tweets = await get_tweets(self.tweets[client_used], username, last_tweet_at)
+            latest_tweets = await get_tweets(self.tweets[client_used] + self.reply_tweets.get(username, []), username, last_tweet_at)
             if not latest_tweets:
                 continue
             
@@ -229,6 +243,28 @@ class AccountTracker():
                         if not isinstance(e, discord.errors.Forbidden):
                             log.error(f'an error occurred at {channel.mention} while sending notification: {e}')
 
+    def _pick_reply_app(self, username: str) -> Twitter:
+        # Stable-ish round robin (keyed by username) spreads the per-account
+        # replies polling load across all authenticated burners, rather than
+        # hammering a single one for every tracked account.
+        apps = list(self.apps.values())
+        return apps[hash(username) % len(apps)]
+
+    async def repliesUpdater(self, username: str):
+        # Phase-spread initial polls across the period so many tracked accounts
+        # don't all fire their replies request in the same instant.
+        await asyncio.sleep(random.uniform(0, configs['reply_check_period']))
+        while True:
+            try:
+                app = self._pick_reply_app(username)
+                self.reply_tweets[username] = await get_user_replies(app, username)
+            except Exception as e:
+                log.error(f'{e} (task: replies updater {username})')
+                await asyncio.sleep(configs['tweets_updater_retry_delay'] * 60)
+                continue
+
+            await asyncio.sleep(configs['reply_check_period'])
+
     async def tweetsUpdater(self, app: Twitter):
         updater_name = asyncio.current_task().get_name().split('_', 1)[1]
         while True:
@@ -272,6 +308,13 @@ class AccountTracker():
                             self.bot.loop.create_task(self.notification(dead_task_username, client_used)).set_name(dead_task_username)
                             log.info(f'restart {dead_task_username} successfully using {client_used}')
 
+            reply_task_names = {f'RepliesUpdater_{u}' for u in users_in_cache}
+            dead_reply_tasks = reply_task_names - running_tasks
+            for task_name in dead_reply_tasks:
+                username = task_name.removeprefix('RepliesUpdater_')
+                self.bot.loop.create_task(self.repliesUpdater(username)).set_name(task_name)
+                log.info(f'restart {task_name} successfully')
+
             for client in self.accounts_data.keys():
                 if f'TweetsUpdater_{client}' not in running_tasks:
                     log.warning(f'tweets updater {client} : dead')
@@ -285,33 +328,36 @@ class AccountTracker():
 
 
     async def addTask(self, username: str, client_used: str):
-        """Adds a new user to the live cache and starts their notification task."""
+        """Adds a new user to the live cache and starts their notification + replies tasks."""
         # Add to live cache first
         self.latest_tweet_timestamps[(username, client_used)] = get_utcnow()
-        
-        # Start the task
+
+        # Start the tasks
         self.bot.loop.create_task(self.notification(username, client_used)).set_name(username)
+        self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
         log.info(f'new task {username} added successfully using {client_used}')
 
     async def removeTask(self, username: str):
-        """Removes a user from the live cache and cancels their notification task."""
+        """Removes a user from the live cache and cancels their notification + replies tasks."""
         key_to_remove = None
         # Create a copy of keys for safe iteration
         for u, c in list(self.latest_tweet_timestamps.keys()):
             if u == username:
                 key_to_remove = (u, c)
                 break
-        
+
         # Remove from cache so the monitor doesn't restart it
         if key_to_remove and key_to_remove in self.latest_tweet_timestamps:
             del self.latest_tweet_timestamps[key_to_remove]
 
-        # Cancel the running task
+        self.reply_tweets.pop(username, None)
+
+        # Cancel the running tasks (notification + repliesUpdater)
+        target_names = {username, f'RepliesUpdater_{username}'}
         for task in asyncio.all_tasks():
-            if task.get_name() == username:
+            if task.get_name() in target_names:
                 task.cancel()
-                log.info(f'task {username} has been cancelled')
-                break
+                log.info(f'task {task.get_name()} has been cancelled')
 
     async def close(self):
         """Closes the persistent session."""

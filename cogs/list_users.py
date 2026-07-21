@@ -60,7 +60,7 @@ class ListUsers(Cog_Extension):
                 user_channel_role_data = await cursor.fetchall()
 
         formatted_data = [
-            f"{i + 1}. ```{username}``` <#{channel_id}>{f' <@&{role_id}>' if role_id else ''} {symbol(enable_type[0])}{t('list.label_retweet')} {symbol(enable_type[1])}{t('list.label_quote')} {symbol(enable_media_type[0])}{t('list.label_text')} {symbol(enable_media_type[1])}{t('list.label_media')}, {t('list.label_using')} {client_used}"
+            f"{i + 1}. ```{username}``` <#{channel_id}>{f' <@&{role_id}>' if role_id else ''} {symbol(enable_type[0])}{t('list.label_retweet')} {symbol(enable_type[1])}{t('list.label_quote')} {symbol(enable_type[2] if len(enable_type) > 2 else '1')}{t('list.label_reply')} {symbol(enable_media_type[0])}{t('list.label_text')} {symbol(enable_media_type[1])}{t('list.label_media')}, {t('list.label_using')} {client_used}"
             for i, (username, channel_id, role_id, enable_type, enable_media_type, client_used) in enumerate(user_channel_role_data)
         ]
 

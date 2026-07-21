@@ -48,6 +48,8 @@ def get_action(tweet: Tweet, disable_quoted: bool = False) -> str:
         return t('display.action.retweeted')
     elif tweet.is_quoted and not disable_quoted:
         return t('display.action.quoted')
+    elif getattr(tweet, 'is_reply', False):
+        return t('display.action.replied')
     else:
         return t('display.action.tweeted')
 

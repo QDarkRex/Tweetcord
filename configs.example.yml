@@ -6,6 +6,13 @@ users_list_pagination_size: 8
 users_list_page_counter_position: 'title'
 
 tweets_check_period: 18
+# How often EACH tracked account's replies are polled (seconds). Unlike plain
+# tweets/retweets/quotes (one shared cheap request per burner every
+# tweets_check_period), replies require ONE request PER TRACKED ACCOUNT
+# (X has no shared "replies feed"), spread round-robin across your burners.
+# Keep this higher than tweets_check_period, especially with many tracked
+# accounts, to avoid hammering X. e.g. 70 accounts / 300s ~= 14 req/min total.
+reply_check_period: 300
 tweets_updater_retry_delay: 5
 tasks_monitor_check_period: 1
 tasks_monitor_log_period: 4

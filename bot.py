@@ -9,6 +9,25 @@ from dotenv import load_dotenv
 from src.checker import build_and_validate_configs, check_env, check_db, check_upgrade
 from src.log import setup_logger
 
+# --- stopgap patch: bypass tweety's broken x-client-transaction-id (upstream issue #295) ---
+# X rewrote its web client (webpack -> Vite) and removed the file tweety needs to
+# compute the transaction id. Remove this once tweety is fixed upstream. Details in
+# transaction_patch.py.
+import transaction_patch  # noqa: F401
+
+# --- stopgap patch #2: real x-client-transaction-id for reply notifications ---
+# The dummy id above is rejected specifically by the "posts & replies" endpoint
+# (needed to detect replies, which never appear in the notifications feed).
+# MUST be imported after transaction_patch so it wraps the dummy generator
+# rather than being overwritten by it. Requires the 'playwright' package +
+# a chromium browser at runtime (see reply_transaction.py / Dockerfile).
+import reply_transaction  # noqa: F401
+
+# --- optional per-burner proxy support (inert unless TWITTER_PROXY is set in .env) ---
+# Routes each burner through its own proxy to avoid X co-flagging multiple burners
+# that share one server IP. Does nothing if TWITTER_PROXY is unset. See proxy_patch.py.
+import proxy_patch  # noqa: F401
+
 log = setup_logger(__name__)
 load_dotenv()
 
@@ -24,7 +43,7 @@ if not build_and_validate_configs():
 # --- Configs are now safe to load ---
 from configs.load_configs import configs
 from src.i18n import init_i18n
-from src.db_function.init_db import init_db
+from src.db_function.init_db import init_db, migrate_db
 from src.db_function.repair_db import auto_repair_mismatched_clients
 from src.presence_updater import update_presence
 
@@ -37,6 +56,7 @@ bot = commands.Bot(command_prefix=configs['prefix'], intents=intents)
 @bot.event
 async def on_ready():
     await init_db()
+    await migrate_db(os.path.join(os.getenv('DATA_PATH'), 'tracked_accounts.db'))
     check_upgrade()
         
     invalid_clients = await check_db()

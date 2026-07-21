@@ -36,14 +36,15 @@ class CustomizeSettingsModal(ui.Modal, title='customize settings'):
         self.role_label = ui.Label(text=t('modal.customize_settings.role_select.label'), component=self.role_select)
         self.add_item(self.role_label)
 
-        # Enable Type (Retweet, Quote) - CheckboxGroup
+        # Enable Type (Retweet, Quote, Reply) - CheckboxGroup
         self.enable_type_checkbox = ui.CheckboxGroup(
             options=[
                 discord.CheckboxGroupOption(label=t('modal.customize_settings.enable_type.retweet'), value='retweet', default=(enable_type[0] == '1')),
-                discord.CheckboxGroupOption(label=t('modal.customize_settings.enable_type.quote'), value='quote', default=(enable_type[1] == '1'))
+                discord.CheckboxGroupOption(label=t('modal.customize_settings.enable_type.quote'), value='quote', default=(enable_type[1] == '1')),
+                discord.CheckboxGroupOption(label=t('modal.customize_settings.enable_type.reply'), value='reply', default=(len(enable_type) < 3 or enable_type[2] == '1'))
             ],
             min_values=0,
-            max_values=2,
+            max_values=3,
             required=False
         )
         self.enable_type_label = ui.Label(text=t('modal.customize_settings.enable_type.label'), component=self.enable_type_checkbox)
@@ -74,11 +75,12 @@ class CustomizeSettingsModal(ui.Modal, title='customize settings'):
     async def on_submit(self, itn: discord.Interaction):
         await itn.response.defer(ephemeral=True)
 
-        # Convert checkbox values back to '11', '10', '01', '00'
+        # Convert checkbox values back to a 3-bit string: retweet, quote, reply
         selected_types = self.enable_type_checkbox.values
         retweet_bit = '1' if 'retweet' in selected_types else '0'
         quote_bit = '1' if 'quote' in selected_types else '0'
-        new_enable_type = retweet_bit + quote_bit
+        reply_bit = '1' if 'reply' in selected_types else '0'
+        new_enable_type = retweet_bit + quote_bit + reply_bit
         
         new_media_type = self.media_type_radio.value
         customized_msg = self.customized_msg.value if self.customized_msg.value else None
