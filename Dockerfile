@@ -1,4 +1,11 @@
-FROM python:3.11.13
+
+# Pinned to -bookworm (Debian 12) rather than the untagged `python:3.11.13`.
+# The untagged tag has floated onto Debian trixie (13); Playwright's
+# `--with-deps` doesn't recognize trixie yet and falls back to a stale
+# Ubuntu-20.04 package list (ttf-ubuntu-font-family / ttf-unifont, both
+# renamed/removed on trixie) which fails to install. bookworm is a release
+# Playwright's dependency mapping does know.
+FROM python:3.11.13-bookworm
 LABEL org.opencontainers.image.source="https://github.com/Yuuzi261/Tweetcord"
 LABEL org.opencontainers.image.description="A Discord bot for Twitter notifications, using tweety-ns module."
 LABEL org.opencontainers.image.licenses="MIT"
