@@ -113,7 +113,18 @@ async def force_refresh() -> bool:
         log.error("reply_transaction.force_refresh called before set_source_token — no burner token available")
         return False
     async with _refresh_lock:
-        new_id = await _fetch_real_transaction_id(_warm_token)
+        # Hard timeout: everything inside _fetch_real_transaction_id has its own
+        # timeouts too (page.goto=25s), but Chromium in a resource-starved
+        # container (e.g. too-small /dev/shm) can hang somewhere those don't
+        # cover (launch, close). Without this, one stuck launch wedges the
+        # shared lock and every other tracked account's replies queue forever
+        # with NO log output at all — exactly what was observed 2026-07-21.
+        try:
+            new_id = await asyncio.wait_for(_fetch_real_transaction_id(_warm_token), timeout=60)
+        except asyncio.TimeoutError:
+            log.error("timed out (60s) sourcing a real x-client-transaction-id — Chromium likely hung "
+                      "(check compose.yml shm_size; Docker's 64MB default is too small for Chromium)")
+            new_id = None
         if new_id:
             _state["id"] = new_id
             _state["fetched_at"] = time.monotonic()
