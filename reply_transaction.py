@@ -71,7 +71,10 @@ async def _fetch_real_transaction_id(auth_token: str) -> str | None:
     found = {}
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # --no-sandbox: Chromium's sandbox needs kernel privileges a Docker
+            # container running as root usually doesn't have; without this flag
+            # the launch can fail/hang silently in exactly that environment.
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             try:
                 ctx = await browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

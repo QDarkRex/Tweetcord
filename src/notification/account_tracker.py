@@ -141,7 +141,10 @@ class AccountTracker():
                 log.warning(f"no timestamp for {username}, task will terminate.")
                 break
 
-            latest_tweets = await get_tweets(self.tweets[client_used] + self.reply_tweets.get(username, []), username, last_tweet_at)
+            # self.tweets[client_used] is a tweety TweetNotifications object (a dict
+            # subclass, iterable but NOT a list — no __add__), so list(...) it before
+            # concatenating with the plain-list replies.
+            latest_tweets = await get_tweets(list(self.tweets[client_used]) + self.reply_tweets.get(username, []), username, last_tweet_at)
             if not latest_tweets:
                 continue
             
