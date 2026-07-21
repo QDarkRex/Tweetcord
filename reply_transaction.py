@@ -36,12 +36,13 @@ Playwright dependency it requires) can be deleted.
 """
 
 import asyncio
-import logging
 import time
 
 import tweety.transaction as _transaction
 
-log = logging.getLogger(__name__)
+from src.log import setup_logger
+
+log = setup_logger(__name__)
 
 # How long a sourced transaction id is trusted before a proactive refresh.
 _TTL_SECONDS = 2 * 60 * 60  # 2 hours — conservative; refreshed sooner on failure anyway.
