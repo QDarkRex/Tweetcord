@@ -12,6 +12,9 @@ tweets_check_period: 18
 # (X has no shared "replies feed"), spread round-robin across your burners.
 # Keep this higher than tweets_check_period, especially with many tracked
 # accounts, to avoid hammering X. e.g. 70 accounts / 300s ~= 14 req/min total.
+# Set to 0 to DISABLE reply notifications entirely (no per-account polling, no
+# Chromium/Playwright launched) — tweets/retweets/quotes keep working. Change +
+# `docker compose restart` (no rebuild needed).
 reply_check_period: 300
 tweets_updater_retry_delay: 5
 tasks_monitor_check_period: 1

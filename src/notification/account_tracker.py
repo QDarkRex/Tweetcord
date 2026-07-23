@@ -48,6 +48,13 @@ class AccountTracker():
         self.timestamps_ready = asyncio.Event()
 
         self.tasksMonitorLogAt = datetime.now(timezone.utc) - timedelta(hours=configs['tasks_monitor_log_period'])
+        # Kill-switch: reply_check_period <= 0 disables ALL reply polling (and the
+        # Chromium/Playwright transaction-id sourcing it needs). Lets you turn the
+        # feature off with a config edit + restart — no rebuild — if it ever
+        # misbehaves, while tweets/retweets/quotes keep working normally.
+        self.replies_enabled = configs.get('reply_check_period', 0) > 0
+        if not self.replies_enabled:
+            log.warning('reply notifications DISABLED (reply_check_period <= 0)')
         bot.loop.create_task(self.setup_tasks())
 
     async def setup_tasks(self):
@@ -87,13 +94,15 @@ class AccountTracker():
 
         # Any ONE authenticated burner's token can source the real transaction id
         # replies need (it isn't observed to be burner-specific — see reply_transaction.py).
-        reply_transaction.set_source_token(next(iter(self.accounts_data.values())))
-        self.bot.loop.create_task(reply_transaction.ensure_fresh()).set_name('ReplyTransactionWarmup')
+        if self.replies_enabled:
+            reply_transaction.set_source_token(next(iter(self.accounts_data.values())))
+            self.bot.loop.create_task(reply_transaction.ensure_fresh()).set_name('ReplyTransactionWarmup')
 
         # Initial user list for notification + replies tasks
         for (username, client_used), _ in self.latest_tweet_timestamps.items():
             self.bot.loop.create_task(self.notification(username, client_used)).set_name(username)
-            self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
+            if self.replies_enabled:
+                self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
 
         self.bot.loop.create_task(self.tasksMonitor()).set_name('TasksMonitor')
 
@@ -311,12 +320,13 @@ class AccountTracker():
                             self.bot.loop.create_task(self.notification(dead_task_username, client_used)).set_name(dead_task_username)
                             log.info(f'restart {dead_task_username} successfully using {client_used}')
 
-            reply_task_names = {f'RepliesUpdater_{u}' for u in users_in_cache}
-            dead_reply_tasks = reply_task_names - running_tasks
-            for task_name in dead_reply_tasks:
-                username = task_name.removeprefix('RepliesUpdater_')
-                self.bot.loop.create_task(self.repliesUpdater(username)).set_name(task_name)
-                log.info(f'restart {task_name} successfully')
+            if self.replies_enabled:
+                reply_task_names = {f'RepliesUpdater_{u}' for u in users_in_cache}
+                dead_reply_tasks = reply_task_names - running_tasks
+                for task_name in dead_reply_tasks:
+                    username = task_name.removeprefix('RepliesUpdater_')
+                    self.bot.loop.create_task(self.repliesUpdater(username)).set_name(task_name)
+                    log.info(f'restart {task_name} successfully')
 
             for client in self.accounts_data.keys():
                 if f'TweetsUpdater_{client}' not in running_tasks:
@@ -337,7 +347,8 @@ class AccountTracker():
 
         # Start the tasks
         self.bot.loop.create_task(self.notification(username, client_used)).set_name(username)
-        self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
+        if self.replies_enabled:
+            self.bot.loop.create_task(self.repliesUpdater(username)).set_name(f'RepliesUpdater_{username}')
         log.info(f'new task {username} added successfully using {client_used}')
 
     async def removeTask(self, username: str):
