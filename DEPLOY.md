@@ -88,17 +88,20 @@ It forwards tweets posted **after** you add the notifier, polling every
 `configs.yml` is mounted, so config edits only need a **restart**. Code changes
 (e.g. removing the patch) need a **rebuild**: `docker compose up -d --build`.
 
-## About the stopgap patch (important)
-`transaction_patch.py` works around upstream tweety issue #295 — X rewrote its
-web client (webpack → Vite) and broke tweety's `x-client-transaction-id`
-computation. The patch makes the bot send a dummy id, which X currently accepts.
+## About tweety issue #295 (x-client-transaction-id)
+X rewrote its web client and broke `tweety`'s `x-client-transaction-id`
+computation (upstream https://github.com/mahrtayyab/tweety/issues/295). This
+bot uses **Yuuzi261's tweety fork** (pinned in `requirements.txt`), which
+patches that computation for real — so no dummy-id monkeypatch and no headless
+browser are needed. If replies (or auth) ever start failing with an
+"animation key indices" / transaction error again, check that fork for an
+update, or bump the pinned commit.
 
-When tweety fixes #295 upstream:
-1. `git pull` (or update tweety), **delete `transaction_patch.py`**, and remove
-   its `import transaction_patch` line from `bot.py`.
-2. `docker compose up -d --build`.
-
-Tracking: https://github.com/mahrtayyab/tweety/issues/295
+## Reply notifications (on/off)
+Replies are polled per-account (see `reply_check_period` in `configs.yml`).
+Set `reply_check_period: 0` to disable them entirely (tweets/retweets/quotes
+keep working); any positive value = seconds between polls. Config-only change:
+`docker compose restart` (no rebuild).
 
 ## Moving your existing notifiers (optional)
 Notifier subscriptions live in `data/tracked_accounts.db`. This bundle ships

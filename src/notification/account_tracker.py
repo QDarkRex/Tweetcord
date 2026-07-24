@@ -11,7 +11,6 @@ import discord
 from discord.ext import commands
 from tweety import Twitter
 
-import reply_transaction
 from core.classes import ParsedTweet
 from configs.load_configs import configs, IS_TRANSLATION_ENABLED
 from src.i18n import t
@@ -91,12 +90,6 @@ class AccountTracker():
                 self.bot.loop.create_task(self.tweetsUpdater(app)).set_name(f'TweetsUpdater_{account_name}')
             except Exception:
                 sys.exit(1)
-
-        # Any ONE authenticated burner's token can source the real transaction id
-        # replies need (it isn't observed to be burner-specific — see reply_transaction.py).
-        if self.replies_enabled:
-            reply_transaction.set_source_token(next(iter(self.accounts_data.values())))
-            self.bot.loop.create_task(reply_transaction.ensure_fresh()).set_name('ReplyTransactionWarmup')
 
         # Initial user list for notification + replies tasks
         for (username, client_used), _ in self.latest_tweet_timestamps.items():

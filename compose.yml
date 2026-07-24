@@ -4,10 +4,6 @@ services:
     image: ghcr.io/yuuzi261/tweetcord:0.6
     container_name: tweetcord
     restart: unless-stopped
-    # Chromium (reply_transaction.py) needs more than Docker's 64MB default
-    # /dev/shm — too little causes it to crash/hang silently instead of
-    # erroring cleanly.
-    shm_size: '1gb'
     env_file: .env
     volumes:
       - ./data/:/bot/data
