@@ -40,6 +40,11 @@ class AccountTracker():
         # feed, so each tracked account is polled individually. See reply_fetcher.py.
         self.reply_tweets: dict[str, list] = {}
         self.apps: dict[str, Twitter] = {}
+        # Subset of self.apps whose accounts can actually reach X's replies
+        # endpoint (some burners are read-limited: auth + notifications feed work,
+        # but UserTweetsAndReplies 404s). Determined once at startup. Reply data
+        # is public, so ANY capable burner can fetch ANY tracked account's replies.
+        self.reply_capable_apps: list[Twitter] = []
         self.session = None
         # Responsible for processing queries and writing timestamps
         self.db_write_queue = asyncio.Queue()
@@ -90,6 +95,14 @@ class AccountTracker():
                 self.bot.loop.create_task(self.tweetsUpdater(app)).set_name(f'TweetsUpdater_{account_name}')
             except Exception:
                 sys.exit(1)
+
+        # Probe which burners can reach the replies endpoint before starting any
+        # reply tasks; disable replies entirely if none can.
+        if self.replies_enabled:
+            await self._probe_reply_capable()
+            if not self.reply_capable_apps:
+                self.replies_enabled = False
+                log.warning('reply notifications DISABLED — no burner can access the replies endpoint')
 
         # Initial user list for notification + replies tasks
         for (username, client_used), _ in self.latest_tweet_timestamps.items():
@@ -248,20 +261,41 @@ class AccountTracker():
                         if not isinstance(e, discord.errors.Forbidden):
                             log.error(f'an error occurred at {channel.mention} while sending notification: {e}')
 
-    def _pick_reply_app(self, username: str) -> Twitter:
-        # Stable-ish round robin (keyed by username) spreads the per-account
-        # replies polling load across all authenticated burners, rather than
-        # hammering a single one for every tracked account.
-        apps = list(self.apps.values())
-        return apps[hash(username) % len(apps)]
+    async def _probe_reply_capable(self):
+        """One-time check of which burners can reach the replies endpoint. Some
+        accounts are read-limited: their notifications feed works but
+        UserTweetsAndReplies 404s ('elevated authorization'). Runs the probes
+        concurrently against a known-active public account."""
+        async def probe(name: str, app: Twitter):
+            try:
+                await asyncio.wait_for(get_user_replies(app, 'elonmusk'), timeout=30)
+                return name, app, True
+            except Exception as e:
+                log.warning(f"burner {name} can't access the replies endpoint ({str(e)[:50]}); excluded from reply polling")
+                return name, app, False
+
+        results = await asyncio.gather(*[probe(n, a) for n, a in self.apps.items()])
+        self.reply_capable_apps = [a for _, a, ok in results if ok]
+        capable = [n for n, _, ok in results if ok]
+        log.info(f"reply-capable burners: {capable if capable else 'NONE'}")
+
+    def _pick_reply_app(self, username: str) -> Twitter | None:
+        # Round robin (keyed by username) over ONLY the reply-capable burners,
+        # spreading the per-account replies polling load across them. Reply data
+        # is public so any capable burner works for any tracked account.
+        if not self.reply_capable_apps:
+            return None
+        return self.reply_capable_apps[hash(username) % len(self.reply_capable_apps)]
 
     async def repliesUpdater(self, username: str):
         # Phase-spread initial polls across the period so many tracked accounts
         # don't all fire their replies request in the same instant.
         await asyncio.sleep(random.uniform(0, configs['reply_check_period']))
         while True:
+            app = self._pick_reply_app(username)
+            if app is None:
+                return  # no reply-capable burner; stop quietly (won't be restarted)
             try:
-                app = self._pick_reply_app(username)
                 self.reply_tweets[username] = await get_user_replies(app, username)
             except Exception as e:
                 log.error(f'{e} (task: replies updater {username})')
