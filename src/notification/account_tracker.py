@@ -263,20 +263,27 @@ class AccountTracker():
 
     async def _probe_reply_capable(self):
         """One-time check of which burners can reach the replies endpoint. Some
-        accounts are read-limited: their notifications feed works but
-        UserTweetsAndReplies 404s ('elevated authorization'). Runs the probes
-        concurrently against a known-active public account."""
-        async def probe(name: str, app: Twitter):
-            try:
-                await asyncio.wait_for(get_user_replies(app, 'elonmusk'), timeout=30)
-                return name, app, True
-            except Exception as e:
-                log.warning(f"burner {name} can't access the replies endpoint ({str(e)[:50]}); excluded from reply polling")
-                return name, app, False
-
-        results = await asyncio.gather(*[probe(n, a) for n, a in self.apps.items()])
-        self.reply_capable_apps = [a for _, a, ok in results if ok]
-        capable = [n for n, _, ok in results if ok]
+        accounts are read-limited: notifications feed works but
+        UserTweetsAndReplies 404s ('elevated authorization'). Probed SEQUENTIALLY
+        (concurrent probing self-induces timeouts and gives false negatives) with
+        one retry, so a transient failure doesn't wrongly exclude a healthy burner."""
+        self.reply_capable_apps = []
+        capable = []
+        for name, app in self.apps.items():
+            last_err = None
+            for attempt in range(2):
+                try:
+                    await asyncio.wait_for(get_user_replies(app, 'elonmusk'), timeout=40)
+                    self.reply_capable_apps.append(app)
+                    capable.append(name)
+                    break
+                except Exception as e:
+                    last_err = e
+                    await asyncio.sleep(2)
+            else:
+                log.warning(f"burner {name} can't access the replies endpoint "
+                            f"({type(last_err).__name__}: {str(last_err)[:40]}); excluded from reply polling")
+            await asyncio.sleep(1)  # small gap so probing doesn't self-rate-limit
         log.info(f"reply-capable burners: {capable if capable else 'NONE'}")
 
     def _pick_reply_app(self, username: str) -> Twitter | None:
