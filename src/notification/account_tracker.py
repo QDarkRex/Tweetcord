@@ -30,6 +30,15 @@ DOMAIN_NAME: str = configs['embed']['proxy']['domain_name']
 log = setup_logger(__name__)
 lock = get_lock()
 
+# A notifications-feed fetch that never returns used to freeze that burner's feed
+# FOREVER: the task stays "alive" (so the monitor's task-existence check reported
+# it healthy) while self.tweets[burner] silently went stale, so every account
+# tracked by that burner stopped delivering with no error anywhere. Observed
+# 2026-07-25: I_KathrinaJKT48 stuck 11h while a fresh manual fetch showed newer
+# tweets. Cap the fetch, and treat "no successful fetch in a while" as dead.
+FEED_FETCH_TIMEOUT = 90  # seconds for one get_tweet_notifications call
+FEED_STALE_SECONDS = 300  # no successful fetch this long => restart the updater
+
 class AccountTracker():
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -45,6 +54,9 @@ class AccountTracker():
         # but UserTweetsAndReplies 404s). Determined once at startup. Reply data
         # is public, so ANY capable burner can fetch ANY tracked account's replies.
         self.reply_capable_apps: list[Twitter] = []
+        # When each burner's feed last fetched SUCCESSFULLY — the real liveness
+        # signal (a task hung mid-request still counts as "alive").
+        self.feed_last_ok: dict[str, datetime] = {}
         self.session = None
         # Responsible for processing queries and writing timestamps
         self.db_write_queue = asyncio.Queue()
@@ -92,6 +104,9 @@ class AccountTracker():
             try:
                 app = await authenticate_account(account_name, account_token)
                 self.apps[account_name] = app
+                # Seed the liveness clock so a burner that NEVER completes a fetch
+                # is still detected as stalled by tasksMonitor.
+                self.feed_last_ok[account_name] = datetime.now(timezone.utc)
                 self.bot.loop.create_task(self.tweetsUpdater(app)).set_name(f'TweetsUpdater_{account_name}')
             except Exception:
                 sys.exit(1)
@@ -315,8 +330,17 @@ class AccountTracker():
         updater_name = asyncio.current_task().get_name().split('_', 1)[1]
         while True:
             try:
-                # Run the potentially blocking library call in a separate thread
-                self.tweets[updater_name] = await asyncio.to_thread(app.get_tweet_notifications)
+                # Run the potentially blocking library call in a separate thread,
+                # capped so one hung request can't stall this burner's feed forever
+                # (see FEED_FETCH_TIMEOUT).
+                self.tweets[updater_name] = await asyncio.wait_for(
+                    asyncio.to_thread(app.get_tweet_notifications),
+                    timeout=FEED_FETCH_TIMEOUT,
+                )
+                self.feed_last_ok[updater_name] = datetime.now(timezone.utc)
+            except asyncio.TimeoutError:
+                log.warning(f"feed fetch for {updater_name} timed out after {FEED_FETCH_TIMEOUT}s; "
+                            f"keeping previous feed and retrying next cycle")
             except KeyError as e:
                 # Handle the error thrown by `tweety-ns` mentioned in issue#59
                 log.warning(f"handled KeyError in {updater_name}: {e}. This is likely a temporary API response issue from Twitter. Skipping this check.")
@@ -362,9 +386,36 @@ class AccountTracker():
                     self.bot.loop.create_task(self.repliesUpdater(username)).set_name(task_name)
                     log.info(f'restart {task_name} successfully')
 
+            # Restart feed updaters that are dead OR stalled. Task existence alone
+            # is not liveness: a task hung inside its fetch stays "alive" while its
+            # feed goes stale and every account on that burner silently stops.
+            now = datetime.now(timezone.utc)
             for client in self.accounts_data.keys():
-                if f'TweetsUpdater_{client}' not in running_tasks:
-                    log.warning(f'tweets updater {client} : dead')
+                task_name = f'TweetsUpdater_{client}'
+                is_dead = task_name not in running_tasks
+                last_ok = self.feed_last_ok.get(client)
+                stale_for = (now - last_ok).total_seconds() if last_ok else None
+                is_stalled = stale_for is not None and stale_for > FEED_STALE_SECONDS
+
+                if not (is_dead or is_stalled):
+                    continue
+
+                reason = 'dead' if is_dead else f'stalled ({stale_for:.0f}s since last successful fetch)'
+                log.warning(f'tweets updater {client} : {reason} — restarting')
+
+                if not is_dead:
+                    for task in asyncio.all_tasks():
+                        if task.get_name() == task_name:
+                            task.cancel()
+                            break
+
+                app = self.apps.get(client)
+                if app is None:
+                    log.error(f'cannot restart tweets updater {client}: no authenticated client')
+                    continue
+                # Reset the clock so a slow restart isn't immediately re-flagged.
+                self.feed_last_ok[client] = now
+                self.bot.loop.create_task(self.tweetsUpdater(app)).set_name(task_name)
 
             if (datetime.now(timezone.utc) - self.tasksMonitorLogAt).total_seconds() / 3600 >= configs['tasks_monitor_log_period']:
                 log.info(f'alive tasks : {list(alive_tasks)}')
