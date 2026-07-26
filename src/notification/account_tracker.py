@@ -39,6 +39,13 @@ lock = get_lock()
 FEED_FETCH_TIMEOUT = 90  # seconds for one get_tweet_notifications call
 FEED_STALE_SECONDS = 300  # no successful fetch this long => restart the updater
 
+# X rate-limits the per-account replies endpoint per burner. Measured 2026-07-25:
+# which burners can reach it FLIPS between runs (1/3/6 ok, then 2/3/4 ok) and
+# tracks which ones were recently used — i.e. it's a quota, not a permanently
+# read-limited account. So never classify a burner as reply-incapable for good:
+# spread reply fetches over ALL burners and rest one briefly when it 404s.
+REPLY_COOLDOWN_SECONDS = 900
+
 class AccountTracker():
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -49,11 +56,11 @@ class AccountTracker():
         # feed, so each tracked account is polled individually. See reply_fetcher.py.
         self.reply_tweets: dict[str, list] = {}
         self.apps: dict[str, Twitter] = {}
-        # Subset of self.apps whose accounts can actually reach X's replies
-        # endpoint (some burners are read-limited: auth + notifications feed work,
-        # but UserTweetsAndReplies 404s). Determined once at startup. Reply data
-        # is public, so ANY capable burner can fetch ANY tracked account's replies.
-        self.reply_capable_apps: list[Twitter] = []
+        # Burners currently resting after the replies endpoint rate-limited them,
+        # mapped to the time they can be used again. Reply data is public, so ANY
+        # burner can fetch ANY tracked account's replies — spreading the load is
+        # what keeps every burner under its quota.
+        self.reply_cooldown: dict[str, datetime] = {}
         # When each burner's feed last fetched SUCCESSFULLY — the real liveness
         # signal (a task hung mid-request still counts as "alive").
         self.feed_last_ok: dict[str, datetime] = {}
@@ -111,13 +118,11 @@ class AccountTracker():
             except Exception:
                 sys.exit(1)
 
-        # Probe which burners can reach the replies endpoint before starting any
-        # reply tasks; disable replies entirely if none can.
-        if self.replies_enabled:
-            await self._probe_reply_capable()
-            if not self.reply_capable_apps:
-                self.replies_enabled = False
-                log.warning('reply notifications DISABLED — no burner can access the replies endpoint')
+        # No startup reply-capability probe: which burners the replies endpoint
+        # accepts is a moving quota, not a fixed trait, so probing once both
+        # delayed startup and produced a stale answer that concentrated load on
+        # whichever burners happened to pass. repliesUpdater spreads across all
+        # burners and rests any that get rate-limited (see REPLY_COOLDOWN_SECONDS).
 
         # Initial user list for notification + replies tasks
         for (username, client_used), _ in self.latest_tweet_timestamps.items():
@@ -276,53 +281,41 @@ class AccountTracker():
                         if not isinstance(e, discord.errors.Forbidden):
                             log.error(f'an error occurred at {channel.mention} while sending notification: {e}')
 
-    async def _probe_reply_capable(self):
-        """One-time check of which burners can reach the replies endpoint. Some
-        accounts are read-limited: notifications feed works but
-        UserTweetsAndReplies 404s ('elevated authorization'). Probed SEQUENTIALLY
-        (concurrent probing self-induces timeouts and gives false negatives) with
-        one retry, so a transient failure doesn't wrongly exclude a healthy burner."""
-        self.reply_capable_apps = []
-        capable = []
-        for name, app in self.apps.items():
-            last_err = None
-            for attempt in range(2):
-                try:
-                    await asyncio.wait_for(get_user_replies(app, 'elonmusk'), timeout=40)
-                    self.reply_capable_apps.append(app)
-                    capable.append(name)
-                    break
-                except Exception as e:
-                    last_err = e
-                    await asyncio.sleep(2)
-            else:
-                log.warning(f"burner {name} can't access the replies endpoint "
-                            f"({type(last_err).__name__}: {str(last_err)[:40]}); excluded from reply polling")
-            await asyncio.sleep(1)  # small gap so probing doesn't self-rate-limit
-        log.info(f"reply-capable burners: {capable if capable else 'NONE'}")
-
-    def _pick_reply_app(self, username: str) -> Twitter | None:
-        # Round robin (keyed by username) over ONLY the reply-capable burners,
-        # spreading the per-account replies polling load across them. Reply data
-        # is public so any capable burner works for any tracked account.
-        if not self.reply_capable_apps:
-            return None
-        return self.reply_capable_apps[hash(username) % len(self.reply_capable_apps)]
+    def _pick_reply_app(self, username: str) -> tuple[str | None, Twitter | None]:
+        """Round-robin (keyed by username) over every burner not currently resting
+        off a replies rate-limit, so the reply load is spread evenly instead of
+        concentrated on a few burners until they hit their quota."""
+        now = datetime.now(timezone.utc)
+        available = [(n, a) for n, a in self.apps.items()
+                     if self.reply_cooldown.get(n, now) <= now]
+        if not available:
+            return None, None
+        return available[hash(username) % len(available)]
 
     async def repliesUpdater(self, username: str):
         # Phase-spread initial polls across the period so many tracked accounts
         # don't all fire their replies request in the same instant.
         await asyncio.sleep(random.uniform(0, configs['reply_check_period']))
         while True:
-            app = self._pick_reply_app(username)
+            name, app = self._pick_reply_app(username)
             if app is None:
-                return  # no reply-capable burner; stop quietly (won't be restarted)
-            try:
-                self.reply_tweets[username] = await get_user_replies(app, username)
-            except Exception as e:
-                log.error(f'{e} (task: replies updater {username})')
-                await asyncio.sleep(configs['tweets_updater_retry_delay'] * 60)
+                # Every burner is resting off a rate-limit; wait and retry rather
+                # than giving up on this account permanently.
+                await asyncio.sleep(60)
                 continue
+            try:
+                self.reply_tweets[username] = await asyncio.wait_for(
+                    get_user_replies(app, username), timeout=60
+                )
+            except Exception as e:
+                # Rest this burner briefly instead of retrying it immediately —
+                # the failure is usually its replies quota, and another burner can
+                # cover this account on the next pass.
+                self.reply_cooldown[name] = (datetime.now(timezone.utc)
+                                             + timedelta(seconds=REPLY_COOLDOWN_SECONDS))
+                log.warning(f'replies via {name} failed for {username} '
+                            f'({type(e).__name__}: {str(e)[:45]}); resting it '
+                            f'{REPLY_COOLDOWN_SECONDS // 60}m')
 
             await asyncio.sleep(configs['reply_check_period'])
 
