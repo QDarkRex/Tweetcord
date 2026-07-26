@@ -62,13 +62,22 @@ driving headless Chromium (Playwright) from inside the bot. It worked, but it
 zombie processes, and *no notifications of any kind* delivered. That whole
 approach was deleted. Do not reintroduce an in-process browser.
 
-### Not every burner can fetch replies
-Some accounts are read-limited: auth and the notifications feed work fine, but
-the replies endpoint 404s for them. `_probe_reply_capable()` tests each burner
-sequentially at startup and only reply-capable ones are used for reply fetching
-(reply data is public, so any healthy burner can fetch any account's replies).
-The endpoint is also genuinely flaky — a single 404 is not proof a burner is bad,
-hence the retries.
+### The replies endpoint is quota-limited per burner
+Measured on the live server with `burner_check.py`: the set of burners the
+replies endpoint accepts **changes between runs** (once 1/3/6 worked and 2/4/5
+404'd; a later run was the reverse) while all six had healthy auth and feeds.
+The failures track *recent use*, so this is a per-burner quota, not permanently
+read-limited accounts.
+
+Consequence: never classify a burner as reply-incapable permanently. An earlier
+version probed once at startup and then routed every account's reply polling
+through the few that passed — which exhausted exactly those. Now reply fetches
+round-robin across **all** burners, and a burner that fails is rested for
+`REPLY_COOLDOWN_SECONDS` while others cover its accounts. Reply data is public,
+so any burner can fetch any account's replies.
+
+If replies fail broadly, raise `reply_check_period` (fewer requests/minute)
+rather than reducing the burner pool.
 
 ## Reliability fixes (feed polling)
 
@@ -105,10 +114,10 @@ the DB on its own within ~2 minutes; no restart needed.
   works (verified against real accounts), and the pipeline forwards them, but a
   reply had not yet been observed landing in a Discord channel at handoff time.
 - **Load is uneven** (one burner had 0 accounts, another 13) — `rebalance_burners.py`
-  exists to fix this but had not been run yet.
-- Reply-capability probing can vary between restarts because the endpoint is
-  flaky; it currently excludes a burner on a timeout as well as a real 404.
-  Refinement idea: only exclude on a genuine `TwitterError`, treat timeouts as
-  "unknown, retry later".
+  exists to fix this but had not been run yet. Verified plan: 54 accounts → 9 per
+  burner in 9 moves.
+- `burner_check.py` reports reply capability as a snapshot; because of the quota
+  behaviour above, a `FAIL` there means "rate-limited right now", not "broken".
+  All six burners were auth-healthy with 48–60 feed items at handoff — none flagged.
 - `configs.yml` has no `reply_check_period` by default, so the checker logs a
   warning and falls back to the value in `configs.example.yml`.
